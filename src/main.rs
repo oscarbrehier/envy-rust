@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::collections::HashMap;
 
 #[derive(Parser)]
 #[command(name = "envy", version, about = "Format and validate .env files")]
@@ -11,23 +12,32 @@ struct Cli {
     command: Commands,
 }
 
+struct KeyInfo {
+    value: String,
+    line: usize,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     Format { path: String },
     Validate { 
         path: String,
-        #[arg(short, long, default_value = "keep-first")]
-        dupes: String 
+        #[arg(short, long, action = clap::ArgAction::SetTrue)]
+        error: bool,
+        // #[arg(short, long, default_value = "keep-first")]
+        // dupes: String 
     },
 }
 
-fn parse_env_file(path: &str) -> Result<Vec<(String, String)>, std::io::Error> {
+fn parse_env_file(path: &str) -> Result<HashMap<String, Vec<KeyInfo>>, std::io::Error> {
 
     let content = fs::read_to_string(path).expect("Could not read file");
-    let mut data: Vec<(String, String)> = Vec::new();
+    let mut data: HashMap<String, Vec<KeyInfo>> = HashMap::new();
+    let mut line_idx: usize = 0;
 
     for line in content.lines().map(|l| l.trim_end_matches(&['\r', '\n'][..])) {
 
+        line_idx += 1;
         let trimmed = line.trim();
 
         if trimmed.is_empty() {
@@ -37,13 +47,18 @@ fn parse_env_file(path: &str) -> Result<Vec<(String, String)>, std::io::Error> {
         if trimmed.starts_with('#') {
             continue ;
         }
-    
+
+        // println!("line {} idx {}\n", line, line_idx);
+        
         if let Some((key, value)) = trimmed.split_once('=') {
+            
+            let key = key.trim().to_string();
+            let value = value.trim().to_string();
+            // println!("value {} key {} at idx {}\n", key, value, line_idx);
+            
+            let info = KeyInfo { value, line: line_idx };
 
-            let key = key.trim();
-            let value = value.trim();
-
-            data.push((key.to_string(), value.to_string()));
+            data.entry(key).or_insert_with(Vec::new).push(info);
             
         }
 
@@ -110,15 +125,51 @@ fn format_env_file(path: &str) -> Result<String, std::io::Error> {
     
 }
 
-fn validate(path: &str, dupe_strategy: &str) {
+fn validate(path: &str, error_mode: bool) {
 
-    let data: Vec<(String, String)> = parse_env_file(path).expect("parsing failed");
+    let data: HashMap<String, Vec<KeyInfo>> = parse_env_file(path).expect("parsing failed");
+    let mut has_error: bool = false;
 
-    for (key, value) in &data {
-        println!("Key: {}, Value: {}", key, value);
+    for (key, infos) in &data {
+
+        // println!("key {} values {}", key, infos.iter().map(|info| info.value.to_string()).collect::<Vec<String>>().join("|"));
+
+        if infos.len() > 1 {
+
+            has_error = true;
+
+            let lines: String = infos
+                .iter()
+                .map(|info| info.line.to_string())
+                .collect::<Vec<String>>()
+                .join(", ");
+
+            println!(
+                "Duplicate keys found: `{}` (lines {})",
+                key, lines
+            );
+
+        }
+
+        for info in infos {
+
+            if key.trim().is_empty() {
+                has_error = true;
+                println!("Empty key found at line {}", info.line);
+            }
+
+            if info.value.trim().is_empty() {
+                has_error = true;
+                println!("Empty value found for key: {} (line {})", key, info.line);
+            }
+
+        }
+
     }
 
-    println!("{}", dupe_strategy);
+    if error_mode && has_error {
+        std::process::exit(1);
+    }
 
 }
 
@@ -145,9 +196,9 @@ fn main() {
                 .expect("write failed");
 
         }
-        Commands::Validate { path, dupes } => {
+        Commands::Validate { path, error } => {
             
-            validate(&path, &dupes);
+            validate(&path, error);
 
         }
     }
