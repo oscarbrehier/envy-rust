@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::collections::HashMap;
 
 #[derive(Parser)]
 #[command(name = "envy", version, about = "Format and validate .env files")]
@@ -12,178 +12,220 @@ struct Cli {
     command: Commands,
 }
 
-struct KeyInfo {
-    value: String,
-    line: usize,
+#[derive(Debug, Clone)]
+enum Line {
+    Comment(String),
+    Empty,
+    KeyValue {
+        key: String,
+        value: String,
+        line: usize,
+    },
+    Invalid {
+        content: String,
+        line: usize,
+    },
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    Format { path: String },
-    Validate { 
+    Format {
+        path: String,
+        #[arg(short, long, default_value = "keep-first")]
+        dupes: String
+    },
+    Validate {
         path: String,
         #[arg(short, long, action = clap::ArgAction::SetTrue)]
         error: bool,
-        // #[arg(short, long, default_value = "keep-first")]
-        // dupes: String 
     },
 }
 
-fn parse_env_file(path: &str) -> Result<HashMap<String, Vec<KeyInfo>>, std::io::Error> {
+fn parse_env_file(path: &str) -> Result<Vec<Line>, std::io::Error> {
+    
+    let content = fs::read_to_string(path)?;
+    let mut lines = Vec::new();
 
-    let content = fs::read_to_string(path).expect("Could not read file");
-    let mut data: HashMap<String, Vec<KeyInfo>> = HashMap::new();
-    let mut line_idx: usize = 0;
+    for (idx, raw_line) in content.lines().enumerate() {
 
-    for line in content.lines().map(|l| l.trim_end_matches(&['\r', '\n'][..])) {
-
-        line_idx += 1;
-        let trimmed = line.trim();
+        let line_num = idx + 1;
+        let trimmed = raw_line.trim_end_matches(&['\r', '\n'][..]).trim();
 
         if trimmed.is_empty() {
-            continue ;
+            lines.push(Line::Empty);
+            continue;
         }
 
         if trimmed.starts_with('#') {
-            continue ;
+            lines.push(Line::Comment(trimmed.to_string()));
+            continue;
         }
 
-        // println!("line {} idx {}\n", line, line_idx);
-        
         if let Some((key, value)) = trimmed.split_once('=') {
-            
+
             let key = key.trim().to_string();
             let value = value.trim().to_string();
-            // println!("value {} key {} at idx {}\n", key, value, line_idx);
-            
-            let info = KeyInfo { value, line: line_idx };
 
-            data.entry(key).or_insert_with(Vec::new).push(info);
-            
+            if key.is_empty() || value.is_empty() {
+                lines.push(Line::Invalid { content: trimmed.to_string(), line: line_num });
+                continue ;
+            }
+
+            lines.push(Line::KeyValue {
+                key,
+                value,
+                line: line_num,
+            });
+
+        } else {
+
+            lines.push(Line::Invalid {
+                content: trimmed.to_string(),
+                line: line_num,
+            });
+
         }
 
     }
 
-    Ok(data)
+    Ok(lines)
 
 }
 
-fn format_env_file(path: &str) -> Result<String, std::io::Error> {
+fn format_env_file(path: &str, dupes: &str) -> Result<String, std::io::Error> {
 
-    let content = fs::read_to_string(path).expect("Could not read file");
-   
-    let mut formatted_content = String::from("");
+    let mut lines = parse_env_file(path).expect("failed to parse file");
+    let mut formatted: Vec<String> = Vec::new();
+
+    let mut keys: Vec<String> = Vec::new();
     let mut formatted_lines = 0;
-    let mut skipped_invalid  = 0;
+    let mut skipped_invalid = 0;
 
-    // let mut keys: Vec<String> = Vec::new();
+    if dupes == "keep-last" {
+        lines.reverse();
+    }
 
-    for line in content.lines().map(|l| l.trim_end_matches(&['\r', '\n'][..])) {
-        
-        let trimmed = line.trim();
+    for line in lines {
 
-        if trimmed.is_empty() {
-            formatted_content.push('\n');
-            continue ;
-        }
+        match line {
 
-        if trimmed.starts_with('#') {
-            formatted_content.push_str(trimmed);
-            formatted_content.push('\n');
-            continue ;
-        }
+            Line::Comment(text) => formatted.push(format!("{}\n", text)),
+            Line::Empty => formatted.push(String::from('\n')),
+            Line::KeyValue { key, value, line } => {
 
-        // println!("Line {:?}:", line.chars().nth(1).unwrap();
-    
-        if let Some((key, value)) = trimmed.split_once('=') {
+                if keys.contains(&key) {
 
-            let key = key.trim();
-            let value = value.trim();
+                    eprintln!("Removed duplicate key: {} (line {})", key, line);
+                    continue ;
 
-            // if keys.contains(&key.to_string()) {
-            //     println!("Skipping key {} found duplicate. Value: {}\n", key, value);
-            //     continue ;
-            // }
+                }
 
-            // keys.push(String::from(key));
+                formatted.push(format!("{}={}\n", key, value));
+                formatted_lines += 1;
 
-            formatted_content.push_str(&format!("{}={}\n", key, value));
-            formatted_lines += 1;
+                keys.push(key);
 
-        } else {
-            skipped_invalid += 1;
+            },
+            Line::Invalid { content, line } => {
+                eprintln!("Skipping invalid line: {} (line {})", content, line);
+                skipped_invalid += 1;
+            }
+
         }
 
     }
-    
+
+    if dupes == "keep-last" {
+        formatted.reverse();
+    }
+
     println!(
         "\n✅ Formatting complete: {} lines formatted, {} invalid lines skipped.",
         formatted_lines, skipped_invalid
     );
 
+    let formatted_content = formatted
+        .join("");
+
     Ok(formatted_content)
-    
+
 }
 
-fn validate(path: &str, error_mode: bool) {
+fn validate(path: &str, error_mode: bool) -> bool {
 
-    let data: HashMap<String, Vec<KeyInfo>> = parse_env_file(path).expect("parsing failed");
-    let mut has_error: bool = false;
+    let lines = parse_env_file(path).expect("failed to parse file");
+    let mut map: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+    let mut has_error = false;
 
-    for (key, infos) in &data {
+    for line in &lines {
 
-        // println!("key {} values {}", key, infos.iter().map(|info| info.value.to_string()).collect::<Vec<String>>().join("|"));
+        match line {
 
-        if infos.len() > 1 {
+            Line::KeyValue { key, value, line } => {
+                map.entry(key.clone())
+                    .or_insert_with(Vec::new)
+                    .push((value.clone(), *line));
+            }
+            _ => {}
+
+        }
+
+    }
+
+    for (key, entries) in map {
+
+        if entries.len() > 1 {
 
             has_error = true;
 
-            let lines: String = infos
+            let lines = entries
                 .iter()
-                .map(|info| info.line.to_string())
-                .collect::<Vec<String>>()
+                .map(|(_, l)| l.to_string())
+                .collect::<Vec<_>>()
                 .join(", ");
 
-            println!(
-                "Duplicate keys found: `{}` (lines {})",
-                key, lines
-            );
+            println!("Duplicate key: `{}` (lines {})", key, lines);
 
         }
 
-        for info in infos {
+        for (value, line) in entries {
 
             if key.trim().is_empty() {
                 has_error = true;
-                println!("Empty key found at line {}", info.line);
+                println!("Empty key found at line {}", line);
             }
 
-            if info.value.trim().is_empty() {
+            if value.trim().is_empty() {
                 has_error = true;
-                println!("Empty value found for key: {} (line {})", key, info.line);
+                println!("Empty value for key `{}` (line {})", key, line);
             }
 
         }
 
     }
 
-    if error_mode && has_error {
-        std::process::exit(1);
+    if has_error && error_mode {
+        return false;
     }
+
+    if !has_error {
+        println!("Validation passed: no issues found");
+    }
+
+    true
 
 }
 
 fn main() {
-
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Format { path } => {
+
+        Commands::Format { path, dupes } => {
 
             println!("Formatting file: {}", path);
 
-            let formatted_file = format_env_file(&path)
-                .expect("formatting failed");
+            let formatted_file = format_env_file(&path, &dupes).expect("formatting failed");
 
             let mut file = OpenOptions::new()
                 .write(true)
@@ -191,16 +233,17 @@ fn main() {
                 .open(&path)
                 .expect("cannot open file");
 
-            file
-                .write(formatted_file.as_bytes())
-                .expect("write failed");
+            file.write(formatted_file.as_bytes()).expect("write failed");
 
         }
         Commands::Validate { path, error } => {
-            
-            validate(&path, error);
+
+            if !validate(&path, error) {
+                std::process::exit(1);
+            }
 
         }
+
     }
 
     // let mut file = File::open(".env")?;
