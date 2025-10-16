@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::OpenOptions;
+use std::hash::Hash;
 use std::io::Write;
 
 #[derive(Parser)]
@@ -39,6 +40,11 @@ enum Commands {
         #[arg(short, long, action = clap::ArgAction::SetTrue)]
         error: bool,
     },
+    Sort {
+        path: String,
+        #[arg(short, long, default_value = "group")]
+        method: String,
+    }
 }
 
 fn parse_env_file(path: &str) -> Result<Vec<Line>, std::io::Error> {
@@ -216,6 +222,60 @@ fn validate(path: &str, error_mode: bool) -> bool {
 
 }
 
+fn sort(path: &str, method: &str) -> Result<String, std::io::Error> {
+
+    let lines: Vec<Line> = parse_env_file(path).expect("failed to parse file");
+
+    let mut output = String::new();
+    let mut grouped_keys: HashMap<String, Vec<(String, String)>> = HashMap::new();
+
+    for line in &lines {
+
+        if let Line::KeyValue { key, value, .. } = line {
+
+            let prefix = key
+                .split('_').next().unwrap_or("").to_string();
+
+            grouped_keys.entry(prefix)
+                .or_insert_with(Vec::new)
+                .push((key.clone(), value.clone()));
+
+        }
+
+    }
+
+    for values in grouped_keys.values_mut() {
+        values.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    
+    for (prefix, entries) in grouped_keys {
+
+        output.push_str(&format!("# {}\n", prefix.to_uppercase()));
+
+        for (key, value) in entries {
+            output.push_str(&format!("{}={}\n", key, value));
+        }
+
+        output.push('\n');
+
+    }
+
+    Ok(output)
+
+}
+
+fn write_to_file(path: &str, content: &str) {
+
+     let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .expect("cannot open file");
+
+    file.write(content.as_bytes()).expect("write failed");
+
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -227,13 +287,7 @@ fn main() {
 
             let formatted_file = format_env_file(&path, &dupes).expect("formatting failed");
 
-            let mut file = OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(&path)
-                .expect("cannot open file");
-
-            file.write(formatted_file.as_bytes()).expect("write failed");
+            write_to_file(&path, &formatted_file);
 
         }
         Commands::Validate { path, error } => {
@@ -241,6 +295,14 @@ fn main() {
             if !validate(&path, error) {
                 std::process::exit(1);
             }
+
+        }
+
+        Commands::Sort { path, method } => {
+
+            let sorted_content = sort(&path, &method).expect("sorting failed");
+            
+            write_to_file(&path, &sorted_content);
 
         }
 
