@@ -18,6 +18,7 @@ enum Line {
         key: String,
         value: String,
         line: usize,
+        inline_comment: Option<String>
     },
     Invalid {
         content: String,
@@ -50,6 +51,49 @@ enum Commands {
     },
 }
 
+fn parse_inline_comment(line: &str) -> (&str, Option<&str>) {
+
+    let mut in_quotes = false;
+    let mut quote_char = ' ';
+    let mut escaped = false;
+
+    for (i, ch) in line.chars().enumerate() {
+
+        if escaped {
+            escaped = false;
+            continue ;
+        }
+
+        if ch == '\\' {
+            escaped = true;
+            continue ;
+        }
+
+        if ch == '"' || ch == '\'' {
+            
+            if !in_quotes {
+                in_quotes = true;
+                quote_char = ch;
+            } else if ch == quote_char {
+                in_quotes = false;
+            }
+
+        }
+
+        if ch == '#' && !in_quotes {
+
+            let content = line[..i].trim_end();
+            let comment = line[i..].trim();
+            return (content, Some(comment));
+
+        }
+
+    }
+
+    (line, None)
+
+}
+
 fn parse_env_file(path: &str) -> Result<Vec<Line>, std::io::Error> {
     
     let content = fs::read_to_string(path)?;
@@ -70,7 +114,9 @@ fn parse_env_file(path: &str) -> Result<Vec<Line>, std::io::Error> {
             continue;
         }
 
-        if let Some((key, value)) = trimmed.split_once('=') {
+        let (content, inline_comment) = parse_inline_comment(trimmed);
+
+        if let Some((key, value)) = content.split_once('=') {
 
             let key = key.to_string();
             let value = value.to_string();
@@ -84,6 +130,7 @@ fn parse_env_file(path: &str) -> Result<Vec<Line>, std::io::Error> {
                 key,
                 value,
                 line: line_num,
+                inline_comment: inline_comment.map(|s| s.to_string())
             });
 
         } else {
@@ -118,16 +165,37 @@ fn get_keys(parsed_lines: &[Line]) -> Vec<String> {
 
 }
 
+fn dry_run_action(width: usize, line: usize, old: Option<&str>, new: Option<&str>, note: &str) -> String {
+
+    let mut msg = String::new();
+
+    if let Some(old) = old {
+        msg.push_str(&format!("{:>width$} | - {}\n", line, old, width = width));
+    }
+    if let Some(new) = new {
+        msg.push_str(&format!("{:>width$} | + {}\n", "", new, width = width));
+    }
+    if !note.is_empty() {
+        msg.push_str(&format!("{:>width$} | ({})\n", "", note, width = width));
+    }
+
+    msg
+
+}
+
 fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String, std::io::Error> {
 
     let mut lines = parse_env_file(path).expect("failed to parse file");
     let mut formatted: Vec<String> = Vec::new();
-
+    let mut dry_run_changes: Vec<(usize, String)> = Vec::new();
     let mut keys: Vec<String> = Vec::new();
-    let mut formatted_lines = 0;
-    let mut skipped_invalid = 0;
 
-    if dupes == "keep-last" {
+    let mut reformatted_count = 0;
+    let mut duplicate_count = 0;
+    let mut invalid_count = 0;
+
+    let reverse = dupes == "keep-last";
+    if reverse {
         lines.reverse();
     }
 
@@ -140,41 +208,64 @@ fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String, std
 
             Line::Comment(text) => formatted.push(format!("{}\n", text)),
             Line::Empty => formatted.push(String::from('\n')),
-            Line::KeyValue { key, value, line } => {
+            Line::KeyValue { key, value, line, inline_comment } => {
 
                 if keys.contains(&key) {
 
                     if dry_run {
-                        println!("{:>width$} | - {}={}", line, key, value, width = width);
-                        println!("{:>width$} | + (line removed - duplicate key)\n", "", width = width);
-                        continue ;
+                        
+                        let msg = dry_run_action(
+                            width,
+                            line,
+                            Some(&format!("{}={}", key, value)),
+                            Some("(line removed - duplicate key"),
+                            ""
+                        );
+
+                        dry_run_changes.push((line, msg));
+
+                    } else {
+                        eprintln!("Removed duplicate key: {} (line {})", key, line);
                     }
 
-                    eprintln!("Removed duplicate key: {} (line {})", key, line);
+                    duplicate_count += 1;
+
                     continue ;
 
                 }
 
-                if key.contains(char::is_whitespace) || value.contains(char::is_whitespace) {
+                if key.contains(char::is_whitespace) || (value.contains(char::is_whitespace) && !inline_comment.is_some()) {
 
                     if dry_run {
-                        println!("{:>width$} | - {}={}", line, key, value, width = width);
-                        println!("{:>width$} | + {}={}", "", key.trim(), value.trim(), width = width);
-                        println!("{:>width$} | (remove extra spaces)\n", "", width = width);
-                        continue ;
+
+                        let msg = dry_run_action(width, line, 
+                            Some(&format!("{}={}", key, value)), 
+                            Some(&format!("{}={}", key.trim(), value.trim())), 
+                            "removed extra spaces"
+                        );
+                        
+                        dry_run_changes.push((line, msg));
+
+                    } else {
+
+                        formatted.push(format!("{}={}\n", key.trim(), value.trim()));
+                        reformatted_count += 1;
+
+                        keys.push(key.trim().to_string());
+
                     }
-
-                    formatted.push(format!("{}={}\n", key.trim(), value.trim()));
-                    formatted_lines += 1;
-
-                    keys.push(key);
 
                     continue ;
 
                 }
 
-                formatted.push(format!("{}={}\n", key, value));
-                formatted_lines += 1;
+                if let Some(comment) = inline_comment {
+                    formatted.push(format!("{}={} {}\n", key, value, comment));
+                } else {
+                    formatted.push(format!("{}={}\n", key, value));
+                }
+
+                reformatted_count += 1;
 
                 keys.push(key);
 
@@ -182,27 +273,46 @@ fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String, std
             Line::Invalid { content, line } => {
 
                 if dry_run {
-                    println!("{:>width$} | - INVALID LINE", line, width = width);
-                    println!("{:>width$} | + (line removed - invalid syntax)\n", "", width = width);
+                    
+                    let msg = dry_run_action(width, line, 
+                        Some("INVALID LINE"), 
+                        Some("(line removed - invalid syntax)"), 
+                        ""
+                    );
+
+                    dry_run_changes.push((line, msg));
+                    
                     continue ;
+
+                } else {
+
+                    eprintln!("Skipping invalid line: {} (line {})", content, line);
+                    invalid_count += 1;
+
                 }
 
-                eprintln!("Skipping invalid line: {} (line {})", content, line);
-                skipped_invalid += 1;
             }
 
         }
 
     }
     
-    if dupes == "keep-last" {
+    if reverse {
+        dry_run_changes.sort_by_key(|(line, _)| *line);
         formatted.reverse();
     }
 
-    println!(
-        "\n✅ Formatting complete: {} lines formatted, {} invalid lines skipped.",
-        formatted_lines, skipped_invalid
-    );
+    if dry_run {
+        for (_, msg) in dry_run_changes {
+            println!("{}", msg);
+        }
+    }
+
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    println!("Summary:");
+    println!(" • {} lines reformatted", reformatted_count);
+    println!(" • {} duplicate keys removed ({})", duplicate_count, dupes);
+    println!(" • {} invalid lines removed\n", invalid_count);
 
     let formatted_content = formatted
         .join("");
@@ -243,7 +353,7 @@ fn validate(path: &str, check_required: bool, error_mode: bool) -> bool {
 
         match line {
 
-            Line::KeyValue { key, value, line } => {
+            Line::KeyValue { key, value, line, .. } => {
                 map.entry(key.clone())
                     .or_insert_with(Vec::new)
                     .push((value.clone(), *line));
@@ -400,7 +510,7 @@ fn main() {
 
         Commands::Format { path, dupes, dry_run } => {
 
-            println!("Formatting file: {}", path);
+            println!("\nFormatting file: {}\n", path);
 
             let formatted_file = format_env_file(&path, &dupes, dry_run).expect("formatting failed");
 
