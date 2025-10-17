@@ -22,4 +22,5 @@ target
 
 roadmap.txt
 
-*.env
+.env
+.env.*

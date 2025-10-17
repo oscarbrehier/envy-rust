@@ -43,7 +43,7 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String,
 
             Line::Comment(text) => formatted.push(format!("{}\n", text)),
             Line::Empty => formatted.push(String::from('\n')),
-            Line::KeyValue { key, value, line, inline_comment } => {
+            Line::KeyValue { key, value, line, inline_comment, .. } => {
 
                 if keys.contains(&key) {
 

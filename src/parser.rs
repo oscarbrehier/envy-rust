@@ -1,4 +1,5 @@
 use std::fs;
+use regex::Regex;
 
 #[derive(Debug, Clone)]
 pub enum Line {
@@ -8,12 +9,23 @@ pub enum Line {
         key: String,
         value: String,
         line: usize,
-        inline_comment: Option<String>
+        inline_comment: Option<String>,
+        references: Option<Vec<String>>
     },
     Invalid {
         content: String,
         line: usize,
     },
+}
+
+fn extract_variable_reference(value: &str) -> Vec<String> {
+
+    let re = Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)\}").unwrap();
+
+    re.captures_iter(value)
+        .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+        .collect()
+
 }
 
 pub fn parse_inline_comment(line: &str) -> (&str, Option<&str>) {
@@ -62,6 +74,7 @@ pub fn parse_inline_comment(line: &str) -> (&str, Option<&str>) {
 pub fn parse_env_file(path: &str) -> Result<Vec<Line>, std::io::Error> {
     
     let content = fs::read_to_string(path)?;
+    
     let mut lines = Vec::new();
 
     for (idx, raw_line) in content.lines().enumerate() {
@@ -86,16 +99,19 @@ pub fn parse_env_file(path: &str) -> Result<Vec<Line>, std::io::Error> {
             let key = key.to_string();
             let value = value.to_string();
 
-            if key.trim().is_empty() || value.trim().is_empty() {
+            if key.trim().is_empty() || (value.trim().is_empty() && !inline_comment.is_some()) {
                 lines.push(Line::Invalid { content: trimmed.to_string(), line: line_num });
                 continue ;
             }
+
+            let references = extract_variable_reference(content);
 
             lines.push(Line::KeyValue {
                 key,
                 value,
                 line: line_num,
-                inline_comment: inline_comment.map(|s| s.to_string())
+                inline_comment: inline_comment.map(|s| s.to_string()),
+                references: Some(references)
             });
 
         } else {
