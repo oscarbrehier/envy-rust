@@ -43,16 +43,40 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String,
 
             Line::Comment(text) => formatted.push(format!("{}\n", text)),
             Line::Empty => formatted.push(String::from('\n')),
-            Line::KeyValue { key, value, line, inline_comment, .. } => {
+            Line::KeyValue { key, value, line, inline_comment, has_export, .. } => {
 
-                if keys.contains(&key) {
+                let normalized_key = if has_export == Some(true) {
+
+                    let no_export_key = key.strip_prefix("export ").unwrap_or(&key);
+
+                    if dry_run {
+
+                        let msg = dry_run_action(
+                            width,
+                            line,
+                            Some(&format!("export {}={}", key, value)),
+                            Some(&format!("{}={}", no_export_key, value)),
+                            "Removed export keyword",
+                        );
+
+                        dry_run_changes.push((line, msg));
+
+                    }
+
+                    no_export_key.to_string()
+
+                } else {
+                    key.clone()
+                };
+
+                if keys.contains(&normalized_key) {
 
                     if dry_run {
                         
                         let msg = dry_run_action(
                             width,
                             line,
-                            Some(&format!("{}={}", key, value)),
+                            Some(&format!("{}={}", normalized_key, value)),
                             Some("(line removed - duplicate key"),
                             ""
                         );
@@ -60,7 +84,7 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String,
                         dry_run_changes.push((line, msg));
 
                     } else {
-                        eprintln!("Removed duplicate key: {} (line {})", key, line);
+                        eprintln!("Removed duplicate key: {} (line {})", normalized_key, line);
                     }
 
                     duplicate_count += 1;
@@ -69,13 +93,13 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String,
 
                 }
 
-                if key.contains(char::is_whitespace) || (value.contains(char::is_whitespace) && !inline_comment.is_some()) {
+                if normalized_key.contains(char::is_whitespace) || (value.contains(char::is_whitespace) && !inline_comment.is_some()) {
 
                     if dry_run {
 
                         let msg = dry_run_action(width, line, 
-                            Some(&format!("{}={}", key, value)), 
-                            Some(&format!("{}={}", key.trim(), value.trim())), 
+                            Some(&format!("{}={}", normalized_key, value)), 
+                            Some(&format!("{}={}", normalized_key.trim(), value.trim())), 
                             "removed extra spaces"
                         );
                         
@@ -83,10 +107,10 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String,
 
                     } else {
 
-                        formatted.push(format!("{}={}\n", key.trim(), value.trim()));
+                        formatted.push(format!("{}={}\n", normalized_key.trim(), value.trim()));
                         reformatted_count += 1;
 
-                        keys.push(key.trim().to_string());
+                        keys.push(normalized_key.trim().to_string());
 
                     }
 
@@ -95,14 +119,14 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String,
                 }
 
                 if let Some(comment) = inline_comment {
-                    formatted.push(format!("{}={} {}\n", key, value, comment));
+                    formatted.push(format!("{}={} {}\n", normalized_key, value, comment));
                 } else {
-                    formatted.push(format!("{}={}\n", key, value));
+                    formatted.push(format!("{}={}\n", normalized_key, value));
                 }
 
                 reformatted_count += 1;
 
-                keys.push(key);
+                keys.push(normalized_key);
 
             },
             Line::Invalid { content, line } => {

@@ -10,7 +10,8 @@ pub enum Line {
         value: String,
         line: usize,
         inline_comment: Option<String>,
-        references: Option<Vec<String>>
+        references: Option<Vec<String>>,
+        has_export: Option<bool>
     },
     Invalid {
         content: String,
@@ -106,12 +107,15 @@ pub fn parse_env_file(path: &str) -> Result<Vec<Line>, std::io::Error> {
 
             let references = extract_variable_reference(content);
 
+            let has_export = trimmed.starts_with("export ");
+
             lines.push(Line::KeyValue {
                 key,
                 value,
                 line: line_num,
                 inline_comment: inline_comment.map(|s| s.to_string()),
-                references: Some(references)
+                references: Some(references),
+                has_export: Some(has_export)
             });
 
         } else {
