@@ -18,7 +18,7 @@ pub fn dry_run_action(width: usize, line: usize, old: Option<&str>, new: Option<
 
 }
 
-pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String, std::io::Error> {
+pub fn format_env_file(path: &str, dupes: &str, dry_run: bool, strip_exports: bool) -> Result<String, std::io::Error> {
 
     let mut lines = parse_env_file(path).expect("failed to parse file");
     let mut formatted: Vec<String> = Vec::new();
@@ -28,6 +28,7 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String,
     let mut reformatted_count = 0;
     let mut duplicate_count = 0;
     let mut invalid_count = 0;
+    let mut exports_count = 0;
 
     let reverse = dupes == "keep-last";
     if reverse {
@@ -45,7 +46,7 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String,
             Line::Empty => formatted.push(String::from('\n')),
             Line::KeyValue { key, value, line, inline_comment, has_export, .. } => {
 
-                let normalized_key = if has_export == Some(true) {
+                let normalized_key = if has_export == Some(true) && strip_exports {
 
                     let no_export_key = key.strip_prefix("export ").unwrap_or(&key);
 
@@ -63,6 +64,7 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String,
 
                     }
 
+                    exports_count += 1;
                     no_export_key.to_string()
 
                 } else {
@@ -124,7 +126,7 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String,
                     formatted.push(format!("{}={}\n", normalized_key, value));
                 }
 
-                reformatted_count += 1;
+                // reformatted_count += 1;
 
                 keys.push(normalized_key);
 
@@ -171,7 +173,8 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool) -> Result<String,
     println!("Summary:");
     println!(" • {} lines reformatted", reformatted_count);
     println!(" • {} duplicate keys removed ({})", duplicate_count, dupes);
-    println!(" • {} invalid lines removed\n", invalid_count);
+    println!(" • {} invalid lines removed", invalid_count);
+    println!(" • {} exports removed\n", exports_count);
 
     let formatted_content = formatted
         .join("");

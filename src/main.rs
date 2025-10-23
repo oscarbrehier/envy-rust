@@ -14,11 +14,11 @@ fn main() {
 
     match cli.command {
 
-        Commands::Format { path, dupes, dry_run } => {
+        Commands::Format { path, dupes, dry_run, strip_exports } => {
 
             println!("\nFormatting file: {}\n", path);
 
-            let formatted_file = formatters::format_env_file(&path, &dupes, dry_run).expect("formatting failed");
+            let formatted_file = formatters::format_env_file(&path, &dupes, dry_run, strip_exports).expect("formatting failed");
 
             if !dry_run {
                 fu::write_to_file(&path, &formatted_file).expect("failed to write");

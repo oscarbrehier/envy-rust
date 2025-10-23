@@ -16,6 +16,8 @@ pub enum Commands {
         dupes: String,
         #[arg(short = 'n', long)]
         dry_run: bool,
+        #[arg(long)]
+        strip_exports: bool
     },
     Sort {
         path: String,
