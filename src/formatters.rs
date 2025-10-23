@@ -65,7 +65,7 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool, strip_exports: bo
                     }
 
                     exports_count += 1;
-                    no_export_key.to_string()
+                    no_export_key.trim().to_string()
 
                 } else {
                     key.clone()
@@ -79,7 +79,7 @@ pub fn format_env_file(path: &str, dupes: &str, dry_run: bool, strip_exports: bo
                             width,
                             line,
                             Some(&format!("{}={}", normalized_key, value)),
-                            Some("(line removed - duplicate key"),
+                            Some("(line removed - duplicate key)"),
                             ""
                         );
 
